@@ -15,11 +15,10 @@ def __():
     import pandas as pd
     from sentence_transformers import CrossEncoder
 
-    # Graceful import check for Jev client library
     try:
         from jev_reranker import JevReranker
     except ImportError:
-        JevReranker = None
+        JevReranker = None  # optional dependency
 
     return (
         CrossEncoder,
@@ -39,13 +38,12 @@ def __():
 def __(mo):
     header_view = mo.md(
         """
-        # 🥊 Reranker Evaluation: Qwen3-Reranker vs. Jev (TypeSafe)
+        # Reranker Benchmark: Qwen3 vs Jev
 
-        This reactive benchmark evaluates **semantic ranking quality** and **inference latency**
-        on the **NanoHotpotQA** benchmark dataset.
+        Compares ranking quality and inference latency on NanoHotpotQA.
 
-        - **Qwen3-Reranker**: Causal pointwise cross-encoder model running locally.
-        - **Jev Reranker**: Remote listwise steerable ranking API with semantic filtering.
+        - Qwen3-Reranker: local pointwise cross-encoder.
+        - Jev: remote listwise ranking API with filtering.
         """
     )
     return header_view,
@@ -98,11 +96,10 @@ def __(mo):
         label="Jev Cutoff Threshold",
     )
 
-    run_btn = mo.ui.run_button(label="🚀 Execute Benchmark")
+    run_btn = mo.ui.run_button(label="Execute Benchmark")
 
-    # Render settings card
     settings_panel = mo.vstack([
-        mo.md("### ⚙️ Benchmark Configuration"),
+        mo.md("### Benchmark Configuration"),
         mo.hstack([jev_key_input, model_choice]),
         mo.hstack([query_count_slider, candidates_slider, threshold_slider]),
         run_btn,
@@ -127,7 +124,7 @@ def __(settings_panel):
 
 @app.cell
 def __(candidates_slider, load_dataset, mo, query_count_slider):
-    mo.md("⏳ Loading `sentence-transformers/NanoHotpotQA-bm25`...")
+    mo.md("Loading `sentence-transformers/NanoHotpotQA-bm25`...")
 
     ds_corpus = load_dataset(
         "sentence-transformers/NanoHotpotQA-bm25", split="corpus"
@@ -139,10 +136,8 @@ def __(candidates_slider, load_dataset, mo, query_count_slider):
         "sentence-transformers/NanoHotpotQA-bm25", split="qrels"
     )
 
-    # Build corpus mapping: doc_id -> text
     corpus_lookup = {row["_id"]: row["text"] for row in ds_corpus}
 
-    # Build ground truth dictionary: query_id -> {doc_id: relevance_score}
     ground_truth = {}
     for row in ds_qrels:
         qid = row["query-id"]
@@ -150,7 +145,6 @@ def __(candidates_slider, load_dataset, mo, query_count_slider):
         score = row.get("score", 1)
         ground_truth.setdefault(qid, {})[cid] = score
 
-    # Assemble query pool with relevant candidate docs
     eval_dataset = []
     num_queries = query_count_slider.value
     max_candidates = candidates_slider.value
@@ -160,10 +154,8 @@ def __(candidates_slider, load_dataset, mo, query_count_slider):
         qtext = query_item["text"]
         relevant_docs = ground_truth.get(qid, {})
 
-        # Extract top BM25 candidates
         candidate_ids = query_item.get("bm25-ranked-ids", [])[:max_candidates]
 
-        # Ensure known ground-truth documents are included in the pool
         for gt_id in relevant_docs:
             if gt_id not in candidate_ids and gt_id in corpus_lookup:
                 candidate_ids.append(gt_id)
@@ -183,7 +175,7 @@ def __(candidates_slider, load_dataset, mo, query_count_slider):
             })
 
     status_message = mo.md(
-        f"✅ Loaded **{len(eval_dataset)}** queries with up to **{max_candidates}** candidate passages each."
+        f"Loaded **{len(eval_dataset)}** queries with up to **{max_candidates}** candidates each."
     )
     return (
         candidate_ids,
@@ -213,15 +205,12 @@ def __(status_message):
 @app.cell
 def __(math):
     def evaluate_ranking(ranked_ids, qrels, k=10):
-        """Calculates nDCG@k and MRR@k against binary/graded ground truth."""
-        # 1. Discounted Cumulative Gain (DCG@k)
         dcg = 0.0
         for rank, doc_id in enumerate(ranked_ids[:k], start=1):
             rel = qrels.get(doc_id, 0)
             if rel > 0:
                 dcg += rel / math.log2(rank + 1)
 
-        # 2. Ideal Discounted Cumulative Gain (IDCG@k)
         sorted_rels = sorted(qrels.values(), reverse=True)[:k]
         idcg = sum(
             rel / math.log2(rank + 1)
@@ -229,7 +218,6 @@ def __(math):
         )
         ndcg = (dcg / idcg) if idcg > 0 else 0.0
 
-        # 3. Mean Reciprocal Rank (MRR@k)
         mrr = 0.0
         for rank, doc_id in enumerate(ranked_ids[:k], start=1):
             if qrels.get(doc_id, 0) > 0:
@@ -261,13 +249,10 @@ def __(
     has_run = run_btn.value
 
     if has_run:
-        # Resolve Jev API key from input box or environment
         effective_key = jev_key_input.value or os.environ.get("JEV_API_KEY", "")
 
-        # Initialize local Qwen Cross-Encoder
         qwen_model = CrossEncoder(model_choice.value, trust_remote_code=True)
 
-        # Initialize Jev client if available and configured
         jev_client = None
         if effective_key and JevReranker:
             try:
@@ -285,18 +270,15 @@ def __(
             doc_ids = [d[0] for d in docs]
             doc_texts = [d[1] for d in docs]
 
-            # --- Evaluate Qwen3-Reranker ---
             qwen_t0 = time.perf_counter()
             query_doc_pairs = [(query, text) for text in doc_texts]
             qwen_scores = qwen_model.predict(query_doc_pairs, batch_size=32)
             qwen_latency_ms = (time.perf_counter() - qwen_t0) * 1000
 
-            # Rank by descending cross-encoder score
             qwen_order = np.argsort(qwen_scores)[::-1]
             qwen_ranked_ids = [doc_ids[idx] for idx in qwen_order]
             qwen_eval = evaluate_ranking(qwen_ranked_ids, qrels, k=10)
 
-            # --- Evaluate Jev Reranker ---
             jev_latency_ms = 0.0
             jev_eval = {"ndcg@10": None, "mrr@10": None}
             jev_retained_count = len(doc_texts)
@@ -311,7 +293,6 @@ def __(
                     )
                     jev_latency_ms = (time.perf_counter() - jev_t0) * 1000
 
-                    # Map returned passages back to IDs
                     text_to_id = {text: did for did, text in docs}
                     jev_ranked_ids = [
                         text_to_id.get(item["text"])
@@ -396,10 +377,9 @@ def __(
 ):
     if not has_run:
         dashboard_view = mo.md(
-            "👉 Adjust configuration parameters and click **🚀 Execute Benchmark** above to run."
+            "Adjust the settings above and click Execute Benchmark to run."
         )
     else:
-        # Build summary statistics
         models_data = []
 
         if qwen_metrics_list:
@@ -422,7 +402,6 @@ def __(
 
         df_summary = pd.DataFrame(models_data)
 
-        # Chart 1: Quality comparison (nDCG@10 & MRR@10)
         df_melted_quality = df_summary.melt(
             id_vars=["Model"],
             value_vars=["Mean nDCG@10", "Mean MRR@10"],
@@ -442,7 +421,6 @@ def __(
             .properties(width=280, height=220, title="Relevance Quality")
         )
 
-        # Chart 2: Latency profile (P50 vs P95)
         df_melted_latency = df_summary.melt(
             id_vars=["Model"],
             value_vars=["P50 Latency (ms)", "P95 Latency (ms)"],
@@ -463,9 +441,9 @@ def __(
         )
 
         dashboard_view = mo.vstack([
-            mo.md("## 📊 Evaluation Results"),
+            mo.md("## Results"),
             mo.hstack([mo.ui.table(df_summary), quality_chart, latency_chart]),
-            mo.md("## 🔬 Per-Query Breakdown"),
+            mo.md("## Per-query breakdown"),
             mo.ui.table(pd.DataFrame(benchmark_records)),
         ])
 
